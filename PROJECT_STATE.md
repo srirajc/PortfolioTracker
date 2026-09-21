@@ -42,3 +42,32 @@
 
 ---
 *Last Updated: September 2026*
+
+## Restoration & Branching Strategy
+
+### 1. Known Working Git Commits
+- **`5cc6d1d`** (HEAD): Clean project state including documentation.
+- **`2655614`** (origin/main): Stable PostgreSQL implementation (`portfolio_db`).
+
+### 2. Quick Restore Commands
+- **Restore single API file:**
+  ```bash
+  git checkout 2655614 -- app/api/portfolio/route.ts
+git reset --hard 5cc6d1d
+
+
+
+
+
+# Create and switch to feature branch
+git checkout main
+git pull
+git checkout -b feature/<feature-name>
+
+# Commit progress checkpoints
+git add .
+git commit -m "checkpoint: <brief description>"
+
+# Merge back to main after verifying builds
+git checkout main
+git merge feature/<feature-name>
