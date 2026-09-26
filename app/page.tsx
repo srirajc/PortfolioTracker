@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { ThemeToggle } from '../components/ThemeToggle';
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
 
 interface Holding {
   id: number;
@@ -31,215 +31,264 @@ interface Summary {
 }
 
 export default function PortfolioDashboard() {
-  const [data, setData] = useState<{ summary: Summary; holdings: Holding[] } | null>(null);
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [holdings, setHoldings] = useState<Holding[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [showAddModal, setShowAddModal] = useState(false);
+
+  // Form state for adding a new asset/transaction
+  const [ticker, setTicker] = useState('');
+  const [name, setName] = useState('');
+  const [assetType, setAssetType] = useState('STOCKS');
+  const [currency, setCurrency] = useState('AUD');
+  const [quantity, setQuantity] = useState('');
+  const [price, setPrice] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    fetch('/api/portfolio')
-      .then((res) => {
-        if (!res.ok) throw new Error('Failed to fetch portfolio data');
-        return res.json();
-      })
-      .then((data) => {
-        setData(data);
-        setLoading(false);
-      })
-      .catch((err) => {
-        setError(err.message);
-        setLoading(false);
-      });
+    fetchPortfolio();
   }, []);
 
+  const fetchPortfolio = async () => {
+    try {
+      const res = await fetch('/api/portfolio');
+      const data = await res.json();
+      setSummary(data.summary);
+      setHoldings(data.holdings || []);
+    } catch (err) {
+      console.error('Error fetching portfolio:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddAsset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      // 1. Create or get asset
+      const assetRes = await fetch('/api/assets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker, name, asset_type: assetType, currency }),
+      });
+      const asset = await assetRes.json();
+
+      // 2. Create initial transaction
+      await fetch('/api/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          asset_id: asset.id,
+          transaction_type: 'BUY',
+          quantity: parseFloat(quantity),
+          price_per_unit: parseFloat(price),
+        }),
+      });
+
+      // Reset form & reload
+      setTicker('');
+      setName('');
+      setQuantity('');
+      setPrice('');
+      setShowAddModal(false);
+      await fetchPortfolio();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to add holding');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   if (loading) {
-    return (
-      <div className="flex justify-center items-center min-h-screen bg-slate-50 dark:bg-slate-950">
-        <p className="text-lg text-slate-600 dark:text-slate-400 font-medium">Loading Portfolio Valuation...</p>
-      </div>
-    );
+    return <div className="p-8 text-white min-h-screen bg-slate-900">Loading portfolio data...</div>;
   }
-
-  if (error || !data) {
-    return (
-      <div className="flex justify-center items-center min-h-screen bg-slate-50 dark:bg-slate-950">
-        <p className="text-lg text-red-600 font-medium">Error: {error || 'No data returned'}</p>
-      </div>
-    );
-  }
-
-  const { summary, holdings } = data;
-  const isPositiveGain = parseFloat(summary.totalGainAUD) >= 0;
-
-  const sortedByGain = [...holdings].sort(
-    (a, b) => parseFloat(b.gainPercent) - parseFloat(a.gainPercent)
-  );
-
-  const topPerformer = sortedByGain.length > 0 ? sortedByGain[0] : null;
-  const worstPerformer = sortedByGain.length > 1 ? sortedByGain[sortedByGain.length - 1] : null;
 
   return (
-    <main className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 p-6 max-w-7xl mx-auto space-y-6 transition-colors duration-200">
+    <div className="min-h-screen bg-slate-900 text-slate-100 p-8 space-y-8">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">Portfolio Overview</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">Live Valuation & Asset Category Breakdown</p>
+          <h1 className="text-3xl font-bold">Portfolio Overview</h1>
+          <p className="text-sm text-slate-400">Live Valuation & Asset Breakdown</p>
         </div>
-        <div className="flex items-center gap-3 self-start md:self-auto">
-          <div className="bg-white dark:bg-slate-900 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-800 shadow-sm">
-            <span className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider font-semibold block">USD / AUD FX</span>
-            <span className="text-sm font-bold text-slate-800 dark:text-slate-200">1 USD = A${summary.usdToAudRate}</span>
-          </div>
-          <ThemeToggle />
-        </div>
+        <button
+          onClick={() => setShowAddModal(true)}
+          className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-semibold transition"
+        >
+          + Add Holding / Units
+        </button>
       </div>
 
-      {/* Top Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        {/* Total Value */}
-        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
-          <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Total Value</p>
-          <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">A${Number(summary.totalValueAUD).toLocaleString('en-AU', { minimumFractionDigits: 2 })}</p>
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Cost: A${Number(summary.totalCostAUD).toLocaleString('en-AU', { minimumFractionDigits: 2 })}</p>
-        </div>
-
-        {/* Shares */}
-        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
-          <p className="text-xs font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wide">Shares</p>
-          <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">A${Number(summary.sharesValueAUD).toLocaleString('en-AU', { minimumFractionDigits: 2 })}</p>
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{((parseFloat(summary.sharesValueAUD) / parseFloat(summary.totalValueAUD)) * 100 || 0).toFixed(1)}% of Portfolio</p>
-        </div>
-
-        {/* ETFs */}
-        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
-          <p className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wide">ETFs</p>
-          <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">A${Number(summary.etfsValueAUD).toLocaleString('en-AU', { minimumFractionDigits: 2 })}</p>
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{((parseFloat(summary.etfsValueAUD) / parseFloat(summary.totalValueAUD)) * 100 || 0).toFixed(1)}% of Portfolio</p>
-        </div>
-
-        {/* Crypto */}
-        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
-          <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide">Crypto</p>
-          <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">A${Number(summary.cryptoValueAUD).toLocaleString('en-AU', { minimumFractionDigits: 2 })}</p>
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">{((parseFloat(summary.cryptoValueAUD) / parseFloat(summary.totalValueAUD)) * 100 || 0).toFixed(1)}% of Portfolio</p>
-        </div>
-
-        {/* Total Gain / Loss */}
-        <div className="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
-          <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Unrealised Gain</p>
-          <p className={`text-2xl font-black mt-1 ${isPositiveGain ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-            {isPositiveGain ? '+' : ''}A${Number(summary.totalGainAUD).toLocaleString('en-AU', { minimumFractionDigits: 2 })}
-          </p>
-          <p className={`text-xs font-semibold mt-1 ${isPositiveGain ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-            {isPositiveGain ? '▲' : '▼'} {summary.totalGainPercent}% Overall
-          </p>
-        </div>
-      </div>
-
-      {/* Outperformer Highlights Banner */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Top Performer */}
-        {topPerformer && (
-          <div className="bg-gradient-to-r from-emerald-50 to-white dark:from-emerald-950/40 dark:to-slate-900 p-4 rounded-xl border border-emerald-200 dark:border-emerald-800/60 shadow-sm flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 font-bold flex items-center justify-center text-lg">
-                🚀
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase tracking-wider bg-emerald-100 dark:bg-emerald-900/80 px-2 py-0.5 rounded">Top Performer</span>
-                  <span className="text-xs text-slate-500 dark:text-slate-400">{topPerformer.assetType}</span>
-                </div>
-                <h3 className="font-bold text-slate-900 dark:text-slate-100 text-base mt-0.5">{topPerformer.ticker} - {topPerformer.name}</h3>
-              </div>
-            </div>
-            <div className="text-right">
-              <p className="text-lg font-black text-emerald-600 dark:text-emerald-400">+{topPerformer.gainPercent}%</p>
-              <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">+A${Number(topPerformer.unrealisedGainAUD).toLocaleString('en-AU', { minimumFractionDigits: 2 })}</p>
-            </div>
+      {/* Summary Cards */}
+      {summary && (
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+            <p className="text-slate-400 text-xs">Total Portfolio Value</p>
+            <p className="text-2xl font-bold text-emerald-400">A${summary.totalValueAUD}</p>
           </div>
-        )}
-
-        {/* Worst Performer */}
-        {worstPerformer && (
-          <div className="bg-gradient-to-r from-rose-50 to-white dark:from-rose-950/40 dark:to-slate-900 p-4 rounded-xl border border-rose-200 dark:border-rose-800/60 shadow-sm flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300 font-bold flex items-center justify-center text-lg">
-                ⚠️
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-rose-700 dark:text-rose-300 uppercase tracking-wider bg-rose-100 dark:bg-rose-900/80 px-2 py-0.5 rounded">Lowest Performer</span>
-                  <span className="text-xs text-slate-500 dark:text-slate-400">{worstPerformer.assetType}</span>
-                </div>
-                <h3 className="font-bold text-slate-900 dark:text-slate-100 text-base mt-0.5">{worstPerformer.ticker} - {worstPerformer.name}</h3>
-              </div>
-            </div>
-            <div className="text-right">
-              <p className={`text-lg font-black ${parseFloat(worstPerformer.gainPercent) >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                {parseFloat(worstPerformer.gainPercent) >= 0 ? '+' : ''}{worstPerformer.gainPercent}%
-              </p>
-              <p className={`text-xs font-medium ${parseFloat(worstPerformer.unrealisedGainAUD) >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
-                {parseFloat(worstPerformer.unrealisedGainAUD) >= 0 ? '+A$' : '-A$'}{Math.abs(Number(worstPerformer.unrealisedGainAUD)).toLocaleString('en-AU', { minimumFractionDigits: 2 })}
-              </p>
-            </div>
+          <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+            <p className="text-slate-400 text-xs">Total Unrealised Gain</p>
+            <p className={`text-2xl font-bold ${Number(summary.totalGainAUD) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              A${summary.totalGainAUD} ({summary.totalGainPercent}%)
+            </p>
           </div>
-        )}
-      </div>
+          <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+            <p className="text-slate-400 text-xs">Shares Value</p>
+            <p className="text-2xl font-bold">A${summary.sharesValueAUD}</p>
+          </div>
+          <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+            <p className="text-slate-400 text-xs">ETFs Value</p>
+            <p className="text-2xl font-bold">A${summary.etfsValueAUD}</p>
+          </div>
+          <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+            <p className="text-slate-400 text-xs">Crypto Value</p>
+            <p className="text-2xl font-bold">A${summary.cryptoValueAUD}</p>
+          </div>
+        </div>
+      )}
 
       {/* Holdings Table */}
-      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
-          <h2 className="text-lg font-bold text-slate-800 dark:text-slate-200">Active Holdings</h2>
+      <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-700">
+          <h2 className="text-lg font-bold">Holdings</h2>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50 dark:bg-slate-900/50 text-slate-500 dark:text-slate-400 text-xs uppercase font-semibold border-b border-slate-200 dark:border-slate-800">
-                <th className="py-3 px-4">Asset</th>
-                <th className="py-3 px-4 text-right">Units</th>
-                <th className="py-3 px-4 text-right">Avg Cost</th>
-                <th className="py-3 px-4 text-right">Live Price</th>
-                <th className="py-3 px-4 text-right">Valuation (AUD)</th>
-                <th className="py-3 px-4 text-right">Gain / Loss</th>
+        <table className="w-full text-left text-sm">
+          <thead className="bg-slate-900/50 text-slate-400 text-xs uppercase">
+            <tr>
+              <th className="px-6 py-3">Ticker</th>
+              <th className="px-6 py-3">Name</th>
+              <th className="px-6 py-3">Type</th>
+              <th className="px-6 py-3">Units</th>
+              <th className="px-6 py-3">Avg Cost</th>
+              <th className="px-6 py-3">Current Price</th>
+              <th className="px-6 py-3">Value (AUD)</th>
+              <th className="px-6 py-3">Gain / Loss (AUD)</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-700">
+            {holdings.map((h) => (
+              <tr key={h.id} className="hover:bg-slate-700/30">
+                <td className="px-6 py-3 font-semibold text-indigo-400 hover:text-indigo-300">
+                  <Link href={`/asset/${h.ticker}`}>
+                    {h.ticker} ↗
+                  </Link>
+                </td>
+                <td className="px-6 py-3">{h.name}</td>
+                <td className="px-6 py-3 text-xs text-slate-400">{h.assetType}</td>
+                <td className="px-6 py-3">{h.quantity}</td>
+                <td className="px-6 py-3">${h.avgCost} {h.currency}</td>
+                <td className="px-6 py-3">${h.currentPrice} {h.currency}</td>
+                <td className="px-6 py-3 font-semibold">A${h.currentValueAUD}</td>
+                <td className={`px-6 py-3 font-semibold ${Number(h.unrealisedGainAUD) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  A${h.unrealisedGainAUD} ({h.gainPercent}%)
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-sm">
-              {holdings.map((h) => {
-                const gainNum = parseFloat(h.unrealisedGainAUD);
-                const isGain = gainNum >= 0;
-                const isTop = topPerformer && h.id === topPerformer.id;
-                const isWorst = worstPerformer && h.id === worstPerformer.id;
-
-                let rowBg = 'hover:bg-slate-50 dark:hover:bg-slate-800/50';
-                if (isTop) rowBg = 'bg-emerald-50/40 dark:bg-emerald-950/20 hover:bg-emerald-50 dark:hover:bg-emerald-950/40';
-                if (isWorst) rowBg = 'bg-rose-50/40 dark:bg-rose-950/20 hover:bg-rose-50 dark:hover:bg-rose-950/40';
-
-                return (
-                  <tr key={h.id} className={`${rowBg} transition-colors`}>
-                    <td className="py-3 px-4 font-semibold text-slate-900 dark:text-slate-100">
-                      <div className="flex items-center gap-2">
-                        <span>{h.ticker}</span>
-                        {isTop && <span className="text-[10px] font-bold text-emerald-800 dark:text-emerald-300 bg-emerald-200 dark:bg-emerald-900 px-1.5 py-0.5 rounded">TOP</span>}
-                        {isWorst && <span className="text-[10px] font-bold text-rose-800 dark:text-rose-300 bg-rose-200 dark:bg-rose-900 px-1.5 py-0.5 rounded">LOWEST</span>}
-                      </div>
-                      <div className="text-xs font-normal text-slate-400 dark:text-slate-500">{h.name}</div>
-                    </td>
-                    <td className="py-3 px-4 text-right font-medium text-slate-700 dark:text-slate-300">{h.quantity}</td>
-                    <td className="py-3 px-4 text-right text-slate-600 dark:text-slate-400">{h.currency === 'USD' ? '$' : 'A$'}{h.avgCost}</td>
-                    <td className="py-3 px-4 text-right font-medium text-slate-900 dark:text-slate-100">{h.currency === 'USD' ? '$' : 'A$'}{h.currentPrice}</td>
-                    <td className="py-3 px-4 text-right font-bold text-slate-900 dark:text-white">A${Number(h.currentValueAUD).toLocaleString('en-AU', { minimumFractionDigits: 2 })}</td>
-                    <td className={`py-3 px-4 text-right font-semibold ${isGain ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                      {isGain ? '+' : ''}A${Number(h.unrealisedGainAUD).toLocaleString('en-AU', { minimumFractionDigits: 2 })}
-                      <span className="text-xs block font-normal">{h.gainPercent}%</span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
       </div>
-    </main>
+
+      {/* Create Asset API endpoint wrapper */}
+      {showAddModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 w-full max-w-md space-y-4">
+            <h2 className="text-xl font-bold">Add Holding / Asset</h2>
+            <form onSubmit={handleAddAsset} className="space-y-3">
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Ticker Symbol</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. VAS"
+                  value={ticker}
+                  onChange={(e) => setTicker(e.target.value.toUpperCase())}
+                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Asset Name</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Vanguard Australian Shares"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Asset Type</label>
+                  <select
+                    value={assetType}
+                    onChange={(e) => setAssetType(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
+                  >
+                    <option value="STOCKS">STOCKS</option>
+                    <option value="ETF">ETF</option>
+                    <option value="CRYPTO">CRYPTO</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Currency</label>
+                  <select
+                    value={currency}
+                    onChange={(e) => setCurrency(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
+                  >
+                    <option value="AUD">AUD</option>
+                    <option value="USD">USD</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Units Quantity</label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    placeholder="10"
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Buy Price Per Unit</label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    placeholder="85.50"
+                    value={price}
+                    onChange={(e) => setPrice(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end space-x-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-slate-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-white font-semibold"
+                >
+                  {submitting ? 'Saving...' : 'Add Holding'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

@@ -1,87 +1,186 @@
 import { NextResponse } from 'next/server';
 import { Pool } from 'pg';
 
-export const revalidate = 3600;
+export const revalidate = 0;
 
 const pool = new Pool({
   user: process.env.POSTGRES_USER || 'sriraj',
-  host: 'localhost',
-  database: 'portfolio_db',
-  port: 5432,
+  host: process.env.POSTGRES_HOST || 'localhost',
+  database: process.env.POSTGRES_DB || 'portfolio_db',
+  password: process.env.POSTGRES_PASSWORD || '',
+  port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
 });
 
-const US_TICKERS = new Set(['NVDA', 'TSLA', 'SPCX', 'AMAT', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META']);
-const ETF_TICKERS = new Set(['VDHG', 'FANG', 'NDIA', 'SPCX', 'CRYP', 'STW', 'VAS', 'VGS', 'IVV']);
+const CRYPTO_COINGECKO_MAP: Record<string, string> = {
+  BTC: 'bitcoin',
+  ETH: 'ethereum',
+  RENDER: 'render-token',
+  AAVE: 'aave',
+  ONDO: 'ondo-finance',
+  SOL: 'solana',
+  ADA: 'cardano',
+  XRP: 'ripple',
+  DOGE: 'dogecoin',
+};
 
-async function fetchStooqPrice(symbol: string): Promise<{ price: number; currency: string } | null> {
+// Tier 1 Crypto Fetch: CoinGecko
+async function fetchCryptoCoinGecko(ticker: string): Promise<number | null> {
+  const clean = ticker.trim().toUpperCase();
+  const coinId = CRYPTO_COINGECKO_MAP[clean] || clean.toLowerCase();
+  
   try {
-    let stooqSymbol = symbol.toLowerCase();
-    if (symbol.endsWith('.AX')) {
-      stooqSymbol = `${symbol.replace('.AX', '')}.au`;
-    } else if (US_TICKERS.has(symbol)) {
-      stooqSymbol = `${symbol}.us`;
-    } else if (symbol === 'USDAUD=X') {
-      stooqSymbol = 'usdaud';
-    }
-
-    const url = `https://stooq.com/q/l/?s=${stooqSymbol}&f=sd2t2ohlcv&h&e=csv`;
-    const res = await fetch(url, { next: { revalidate: 3600 } });
+    const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`, {
+      headers: { 'Accept': 'application/json' },
+      cache: 'no-store',
+    });
     if (!res.ok) return null;
-
-    const csvText = await res.text();
-    const lines = csvText.split('\n');
-
-    if (lines.length > 1) {
-      const columns = lines[1].split(',');
-      const closePrice = parseFloat(columns[4]);
-      if (!isNaN(closePrice) && closePrice > 0) {
-        return {
-          price: closePrice,
-          currency: US_TICKERS.has(symbol) ? 'USD' : 'AUD',
-        };
-      }
-    }
-  } catch (err) {
-    // Failover
+    const data = await res.json();
+    return data?.[coinId]?.usd ?? null;
+  } catch {
+    return null;
   }
+}
+
+// Tier 2 Crypto Fetch: Binance Public API
+async function fetchCryptoBinance(ticker: string): Promise<number | null> {
+  const clean = ticker.trim().toUpperCase();
+  const symbol = `${clean}USDT`;
+  try {
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`, {
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const price = parseFloat(data?.price);
+    return isNaN(price) || price === 0 ? null : price;
+  } catch {
+    return null;
+  }
+}
+
+// Tier 3 Crypto Fetch: CoinCap API
+async function fetchCryptoCoinCap(ticker: string): Promise<number | null> {
+  const clean = ticker.trim().toUpperCase();
+  const coinId = CRYPTO_COINGECKO_MAP[clean] || clean.toLowerCase();
+  try {
+    const res = await fetch(`https://api.coincap.io/v2/assets/${coinId}`, {
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const price = parseFloat(data?.data?.priceUsd);
+    return isNaN(price) || price === 0 ? null : price;
+  } catch {
+    return null;
+  }
+}
+
+// Robust Crypto Resolver
+async function resolveCryptoPrice(ticker: string): Promise<number | null> {
+  // Try CoinGecko
+  const cgPrice = await fetchCryptoCoinGecko(ticker);
+  if (cgPrice !== null) {
+    console.log(`[PORTFOLIO API] Crypto (CoinGecko) for ${ticker}: $${cgPrice} USD`);
+    return cgPrice;
+  }
+
+  // Try Binance
+  const binancePrice = await fetchCryptoBinance(ticker);
+  if (binancePrice !== null) {
+    console.log(`[PORTFOLIO API] Crypto (Binance) for ${ticker}: $${binancePrice} USD`);
+    return binancePrice;
+  }
+
+  // Try CoinCap
+  const coincapPrice = await fetchCryptoCoinCap(ticker);
+  if (coincapPrice !== null) {
+    console.log(`[PORTFOLIO API] Crypto (CoinCap) for ${ticker}: $${coincapPrice} USD`);
+    return coincapPrice;
+  }
+
   return null;
 }
 
-async function fetchYahooPrice(symbol: string): Promise<{ price: number; currency: string } | null> {
+// Stooq Fetcher for Stocks and US_STOCKS
+async function fetchStockPriceStooq(ticker: string, currency: string, assetType: string): Promise<number | null> {
+  const clean = ticker.trim().toUpperCase();
+  const typeUpper = assetType.trim().toUpperCase();
+  let stooqSymbol = clean.toLowerCase();
+
+  if (typeUpper === 'US_STOCKS' || currency.toUpperCase() === 'USD') {
+    if (!stooqSymbol.endsWith('.us')) stooqSymbol = `${stooqSymbol}.us`;
+  } else if (currency.toUpperCase() === 'AUD') {
+    if (!stooqSymbol.endsWith('.au')) stooqSymbol = `${stooqSymbol}.au`;
+  }
+
   try {
-    const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+    const url = `https://stooq.com/q/l/?s=${stooqSymbol}&f=sd2t2ohlcv&h&e=csv`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const text = await res.text();
+    const lines = text.trim().split('\n');
+    if (lines.length < 2) return null;
+
+    const dataRow = lines[1].split(',');
+    const closePriceStr = dataRow[6];
+    const price = parseFloat(closePriceStr);
+    return isNaN(price) || price === 0 ? null : price;
+  } catch {
+    return null;
+  }
+}
+
+// Yahoo Direct Chart API Fallback
+async function fetchYahooPriceFallback(ticker: string, currency: string, assetType: string): Promise<number | null> {
+  const clean = ticker.trim().toUpperCase();
+  const typeUpper = assetType.trim().toUpperCase();
+  let symbol = clean;
+
+  if (typeUpper !== 'US_STOCKS' && currency.toUpperCase() === 'AUD' && !symbol.endsWith('.AX')) {
+    symbol = `${symbol}.AX`;
+  }
+
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
     const res = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
       },
-      next: { revalidate: 3600 },
+      cache: 'no-store'
     });
-
-    if (res.ok) {
-      const data = await res.json();
-      const meta = data?.chart?.result?.[0]?.meta;
-      const price = meta?.regularMarketPrice;
-      if (typeof price === 'number' && price > 0) {
-        return {
-          price,
-          currency: (meta?.currency || (symbol.endsWith('.AX') ? 'AUD' : 'USD')).toUpperCase(),
-        };
-      }
-    }
-  } catch (err) {
-    // Failover
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.chart?.result?.[0]?.meta?.regularMarketPrice ?? null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
-async function getLivePrice(symbol: string): Promise<{ price: number; currency: string } | null> {
-  let quote = await fetchStooqPrice(symbol);
-  if (quote) return quote;
+async function getLivePrice(ticker: string, currency: string, assetType: string): Promise<number | null> {
+  const clean = ticker.trim().toUpperCase();
+  const typeUpper = assetType.trim().toUpperCase();
 
-  quote = await fetchYahooPrice(symbol);
-  if (quote) return quote;
+  // Explicit check for CRYPTO asset type
+  if (typeUpper === 'CRYPTO' || clean in CRYPTO_COINGECKO_MAP) {
+    const cryptoPrice = await resolveCryptoPrice(clean);
+    if (cryptoPrice !== null) return cryptoPrice;
+  }
 
+  // Stocks & US_STOCKS via Stooq
+  const stooqPrice = await fetchStockPriceStooq(clean, currency, typeUpper);
+  if (stooqPrice !== null) {
+    console.log(`[PORTFOLIO API] Stooq price for ${clean} (${typeUpper}): $${stooqPrice}`);
+    return stooqPrice;
+  }
+
+  // Fallback to Yahoo
+  const yahooPrice = await fetchYahooPriceFallback(clean, currency, typeUpper);
+  if (yahooPrice !== null) {
+    console.log(`[PORTFOLIO API] Yahoo fallback price for ${clean} (${typeUpper}): $${yahooPrice}`);
+    return yahooPrice;
+  }
+
+  console.warn(`[PORTFOLIO API] Could not retrieve market price for ${clean}`);
   return null;
 }
 
@@ -90,128 +189,126 @@ export async function GET() {
     const query = `
       SELECT 
         a.id,
-        a.ticker,
         a.name,
-        a.asset_type,
-        SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity ELSE -t.quantity END)::numeric as total_quantity,
-        SUM(CASE WHEN t.transaction_type = 'BUY' 
-                 THEN (t.quantity * t.price_per_unit) + COALESCE(t.brokerage, 0)
-                 ELSE -((t.quantity * t.price_per_unit) - COALESCE(t.brokerage, 0)) END)::numeric as net_invested
+        a.ticker,
+        a.asset_type AS asset_type,
+        a.currency,
+        COALESCE(SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity ELSE -t.quantity END), 0) AS units,
+        COALESCE(
+          SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price_per_unit ELSE 0 END) / 
+          NULLIF(SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity ELSE 0 END), 0), 
+          0
+        ) AS avg_buy_price
       FROM assets a
-      JOIN transactions t ON a.id = t.asset_id
-      GROUP BY a.id, a.ticker, a.name, a.asset_type
-      HAVING SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity ELSE -t.quantity END) > 0.0001
-      ORDER BY a.ticker ASC
+      LEFT JOIN transactions t ON a.id = t.asset_id
+      GROUP BY a.id, a.name, a.ticker, a.asset_type, a.currency;
     `;
 
-    const res = await pool.query(query);
-    const holdings = res.rows;
+    const { rows } = await pool.query(query);
 
-    let usdToAudRate = 1.52;
-    const fxQuote = await getLivePrice('USDAUD=X');
-    if (fxQuote && fxQuote.price) {
-      usdToAudRate = fxQuote.price;
+    let usdToAud = 1.48;
+    try {
+      const fxPrice = await fetchStockPriceStooq('AUDUSD', 'USD', 'US_STOCKS');
+      if (fxPrice && fxPrice > 0) {
+        usdToAud = 1 / fxPrice;
+      }
+    } catch {
+      console.warn('[PORTFOLIO API] AUDUSD FX fetch failed, using default 1.48');
     }
 
-    let portfolioTotalValueAUD = 0;
-    let portfolioTotalCostAUD = 0;
+    let totalValueAUDNum = 0;
+    let totalCostAUDNum = 0;
+    let sharesValueAUDNum = 0;
+    let etfsValueAUDNum = 0;
+    let cryptoValueAUDNum = 0;
 
-    let sharesTotalValueAUD = 0;
-    let etfsTotalValueAUD = 0;
-    let cryptoTotalValueAUD = 0;
+    const holdings = await Promise.all(
+      rows.map(async (row) => {
+        const quantityNum = Number(row.units) || 0;
+        const avgCostNum = Number(row.avg_buy_price) || 0;
+        const currencyStr = row.currency || 'AUD';
+        const tickerStr = row.ticker || '';
+        const assetTypeStr = row.asset_type || 'STOCKS';
+        const typeUpper = assetTypeStr.trim().toUpperCase();
 
-    const enrichedHoldings = await Promise.all(
-      holdings.map(async (h) => {
-        const qty = Number(h.total_quantity || 0);
-        const costBasisOriginal = Number(h.net_invested || 0);
-        const avgCostOriginal = qty > 0 ? costBasisOriginal / qty : 0;
+        let currentPriceNum = avgCostNum;
 
-        let rawTicker = h.ticker.trim().toUpperCase();
-        let querySymbol = rawTicker;
-
-        const isUS = US_TICKERS.has(rawTicker) || h.asset_type === 'US_STOCKS';
-        const isCrypto = h.asset_type === 'CRYPTO';
-
-        if (isCrypto) {
-          querySymbol = rawTicker.endsWith('-AUD') ? rawTicker : `${rawTicker}-AUD`;
-        } else if (!isUS && !rawTicker.includes('.')) {
-          querySymbol = `${rawTicker}.AX`;
+        if (tickerStr) {
+          const livePrice = await getLivePrice(tickerStr, currencyStr, assetTypeStr);
+          if (livePrice !== null) {
+            currentPriceNum = livePrice;
+          }
         }
 
-        let liveQuote = await getLivePrice(querySymbol);
+        const isCrypto = typeUpper === 'CRYPTO';
+        const isUSStock = typeUpper === 'US_STOCKS';
+        const rate = (isCrypto || isUSStock || currencyStr.toUpperCase() === 'USD') ? usdToAud : 1;
 
-        let currentPriceNative = avgCostOriginal;
-        let currency = isUS ? 'USD' : 'AUD';
+        const costBasisNum = quantityNum * avgCostNum;
+        const currentValueNum = quantityNum * currentPriceNum;
+        const currentValueAUDNum = currentValueNum * rate;
+        const costBasisAUDNum = costBasisNum * rate;
+        const unrealisedGainAUDNum = currentValueAUDNum - costBasisAUDNum;
+        const gainPercentNum = costBasisAUDNum > 0 ? (unrealisedGainAUDNum / costBasisAUDNum) * 100 : 0;
 
-        if (liveQuote && liveQuote.price) {
-          currentPriceNative = liveQuote.price;
-          currency = liveQuote.currency;
-        }
+        totalValueAUDNum += currentValueAUDNum;
+        totalCostAUDNum += costBasisAUDNum;
 
-        const currentValueNative = qty * currentPriceNative;
-        const fxMultiplier = currency === 'USD' ? usdToAudRate : 1.0;
+        const tickerUpper = String(tickerStr).toUpperCase();
+        const nameUpper = String(row.name || '').toUpperCase();
 
-        const currentValueAUD = currentValueNative * fxMultiplier;
-        const costBasisAUD = costBasisOriginal;
+        const isETF = 
+          typeUpper.includes('ETF') || 
+          typeUpper.includes('INDEX') || 
+          tickerUpper.includes('ETF') ||
+          ['VAS', 'VGS', 'IVV', 'NDQ', 'A200', 'DHHF', 'VDHG', 'QUAL', 'IOZ', 'STW', 'VHY', 'VDBA', 'VDAL', 'NDIA', 'CRYP'].some(t => tickerUpper.includes(t)) ||
+          nameUpper.includes('VANGUARD') ||
+          nameUpper.includes('ISHARES') ||
+          nameUpper.includes('BETASHARES');
 
-        const unrealisedGainAUD = currentValueAUD - costBasisAUD;
-        const gainPercent = costBasisAUD > 0 ? (unrealisedGainAUD / costBasisAUD) * 100 : 0;
-
-        portfolioTotalValueAUD += currentValueAUD;
-        portfolioTotalCostAUD += costBasisAUD;
-
-        // Categorize into Shares, ETFs, or Crypto
         if (isCrypto) {
-          cryptoTotalValueAUD += currentValueAUD;
-        } else if (ETF_TICKERS.has(rawTicker) || h.asset_type === 'ETF') {
-          etfsTotalValueAUD += currentValueAUD;
+          cryptoValueAUDNum += currentValueAUDNum;
+        } else if (isETF) {
+          etfsValueAUDNum += currentValueAUDNum;
         } else {
-          sharesTotalValueAUD += currentValueAUD;
+          sharesValueAUDNum += currentValueAUDNum;
         }
 
         return {
-          id: h.id,
-          ticker: rawTicker,
-          name: h.name,
-          assetType: h.asset_type,
-          currency,
-          quantity: qty,
-          avgCost: avgCostOriginal.toFixed(2),
-          costBasis: costBasisOriginal.toFixed(2),
-          currentPrice: currentPriceNative.toFixed(2),
-          currentValue: currentValueNative.toFixed(2),
-          currentValueAUD: currentValueAUD.toFixed(2),
-          unrealisedGainAUD: unrealisedGainAUD.toFixed(2),
-          gainPercent: gainPercent.toFixed(2),
+          id: row.id,
+          ticker: tickerStr,
+          name: row.name || '',
+          assetType: assetTypeStr,
+          currency: currencyStr,
+          quantity: quantityNum,
+          avgCost: avgCostNum.toFixed(2),
+          costBasis: costBasisNum.toFixed(2),
+          currentPrice: currentPriceNum.toFixed(2),
+          currentValue: currentValueNum.toFixed(2),
+          currentValueAUD: currentValueAUDNum.toFixed(2),
+          unrealisedGainAUD: unrealisedGainAUDNum.toFixed(2),
+          gainPercent: gainPercentNum.toFixed(2),
         };
       })
     );
 
-    const totalGainAUD = portfolioTotalValueAUD - portfolioTotalCostAUD;
-    const totalGainPercent = portfolioTotalCostAUD > 0 ? (totalGainAUD / portfolioTotalCostAUD) * 100 : 0;
+    const totalGainAUDNum = totalValueAUDNum - totalCostAUDNum;
+    const totalGainPercentNum = totalCostAUDNum > 0 ? (totalGainAUDNum / totalCostAUDNum) * 100 : 0;
 
-    return NextResponse.json(
-      {
-        summary: {
-          totalValueAUD: portfolioTotalValueAUD.toFixed(2),
-          totalCostAUD: portfolioTotalCostAUD.toFixed(2),
-          totalGainAUD: totalGainAUD.toFixed(2),
-          totalGainPercent: totalGainPercent.toFixed(2),
-          sharesValueAUD: sharesTotalValueAUD.toFixed(2),
-          etfsValueAUD: etfsTotalValueAUD.toFixed(2),
-          cryptoValueAUD: cryptoTotalValueAUD.toFixed(2),
-          usdToAudRate: usdToAudRate.toFixed(4),
-        },
-        holdings: enrichedHoldings,
-      },
-      {
-        headers: {
-          'Cache-Control': 's-maxage=3600, stale-while-revalidate=86400',
-        },
-      }
-    );
-  } catch (error: any) {
-    console.error('Portfolio Route Error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const summary = {
+      totalValueAUD: totalValueAUDNum.toFixed(2),
+      totalCostAUD: totalCostAUDNum.toFixed(2),
+      totalGainAUD: totalGainAUDNum.toFixed(2),
+      totalGainPercent: totalGainPercentNum.toFixed(2),
+      sharesValueAUD: sharesValueAUDNum.toFixed(2),
+      etfsValueAUD: etfsValueAUDNum.toFixed(2),
+      cryptoValueAUD: cryptoValueAUDNum.toFixed(2),
+      usdToAudRate: usdToAud.toFixed(2),
+    };
+
+    return NextResponse.json({ summary, holdings });
+  } catch (error) {
+    console.error('[PORTFOLIO API] Error in GET handler:', error);
+    return NextResponse.json({ error: 'Failed to fetch portfolio data' }, { status: 500 });
   }
 }

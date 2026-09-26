@@ -1,42 +1,33 @@
 import { NextResponse } from 'next/server';
-import pool from '@/lib/db';
+import { Pool } from 'pg';
+
+const pool = new Pool({
+  user: process.env.POSTGRES_USER || 'sriraj',
+  host: process.env.POSTGRES_HOST || 'localhost',
+  database: process.env.POSTGRES_DB || 'portfolio_db',
+  password: process.env.POSTGRES_PASSWORD || '',
+  port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
+});
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const { ticker, name, asset_type, transaction_type, quantity, price_per_unit, brokerage, transaction_date, notes } = body;
+    const { asset_id, transaction_type, quantity, price_per_unit } = await request.json();
 
-    // 1. Check or insert asset
-    let assetRes = await pool.query('SELECT id FROM assets WHERE ticker = $1', [ticker.toUpperCase()]);
-    let assetId;
-
-    if (assetRes.rows.length === 0) {
-      const newAsset = await pool.query(
-        'INSERT INTO assets (ticker, name, asset_type) VALUES ($1, $2, $3) RETURNING id',
-        [ticker.toUpperCase(), name || ticker, asset_type || 'ASX_SHARE']
-      );
-      assetId = newAsset.rows[0].id;
-    } else {
-      assetId = assetRes.rows[0].id;
+    if (!asset_id || !transaction_type || !quantity || !price_per_unit) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // 2. Insert transaction
-    await pool.query(
-      `INSERT INTO transactions (asset_id, transaction_type, quantity, price_per_unit, brokerage, transaction_date, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        assetId,
-        transaction_type,
-        parseFloat(quantity),
-        parseFloat(price_per_unit),
-        parseFloat(brokerage || 0),
-        transaction_date || new Date().toISOString().split('T')[0],
-        notes || '',
-      ]
-    );
+    const insertQuery = `
+      INSERT INTO transactions (asset_id, transaction_type, quantity, price_per_unit, created_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      RETURNING *;
+    `;
 
-    return NextResponse.json({ success: true, message: 'Transaction recorded successfully!' });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const res = await pool.query(insertQuery, [asset_id, transaction_type, quantity, price_per_unit]);
+
+    return NextResponse.json(res.rows[0]);
+  } catch (error) {
+    console.error('Error recording transaction:', error);
+    return NextResponse.json({ error: 'Failed to record transaction' }, { status: 500 });
   }
 }
