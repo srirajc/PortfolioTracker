@@ -1,9 +1,9 @@
 import './globals.css';
-import { Providers } from './providers';
+import { Providers } from '@/components/Providers';
 
 export const metadata = {
-  title: 'Portfolio Dashboard',
-  description: 'Live Portfolio Tracker',
+  title: 'Portfolio Tracker',
+  description: 'Manage holdings and dividends',
 };
 
 export default function RootLayout({
@@ -12,8 +12,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen transition-colors duration-200">
+    <html lang="en">
+      <body>
         <Providers>{children}</Providers>
       </body>
     </html>

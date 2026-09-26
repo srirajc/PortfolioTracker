@@ -1,33 +1,40 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useTheme } from '../context/ThemeContext';
 
-export function ThemeToggle() {
-  const [mounted, setMounted] = useState(false);
-  const themeContext = useTheme();
+export default function ThemeToggle() {
+  const [isDark, setIsDark] = useState(true);
 
   useEffect(() => {
-    setMounted(true);
+    // Sync initial state with document element
+    const isDarkMode = document.documentElement.classList.contains('dark') || 
+                       document.documentElement.getAttribute('data-theme') === 'dark';
+    setIsDark(isDarkMode);
   }, []);
 
-  if (!mounted || !themeContext) {
-    return (
-      <button className="p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-slate-700 dark:text-slate-200 text-sm font-medium">
-        🌙 Dark
-      </button>
-    );
-  }
+  const toggleTheme = () => {
+    const nextDark = !isDark;
+    setIsDark(nextDark);
 
-  const { theme, toggleTheme } = themeContext;
+    if (nextDark) {
+      document.documentElement.classList.add('dark');
+      document.documentElement.setAttribute('data-theme', 'dark');
+      localStorage.setItem('theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      document.documentElement.setAttribute('data-theme', 'light');
+      localStorage.setItem('theme', 'light');
+    }
+  };
 
   return (
     <button
       onClick={toggleTheme}
-      className="p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors font-medium text-sm flex items-center gap-1.5"
+      type="button"
+      className="p-2 px-3 rounded-lg border border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 transition-colors text-xs font-medium"
       aria-label="Toggle Theme"
     >
-      {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
+      {isDark ? '☀️ Light Mode' : '🌙 Dark Mode'}
     </button>
   );
 }
